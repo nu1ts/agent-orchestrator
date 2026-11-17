@@ -486,7 +486,10 @@ def unregister_child(request_id, pid):
 
 def signal_child_group(pid, signum):
     try:
-        os.killpg(pid, signum)
+        if hasattr(os, "killpg"):
+            os.killpg(pid, signum)
+        else:
+            os.kill(pid, signum)
     except OSError:
         pass
 
@@ -494,7 +497,8 @@ def escalate_child_group(pid):
     with MCP_STATE_LOCK:
         active = pid in ACTIVE_CHILD_GROUPS
     if active:
-        signal_child_group(pid, signal.SIGKILL)
+        sig = getattr(signal, "SIGKILL", signal.SIGTERM)
+        signal_child_group(pid, sig)
 
 def cancel_request(request_id):
     with MCP_STATE_LOCK:
@@ -660,11 +664,11 @@ def execute(agent, task, mode, cwd, timeout, profile=None, task_id=None,
         return finish(code, output, False)
     except subprocess.TimeoutExpired as exc:
         try:
-            os.killpg(process.pid, signal.SIGTERM)
+            signal_child_group(process.pid, signal.SIGTERM)
             process.communicate(timeout=5)
         except Exception:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                signal_child_group(process.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
             except OSError:
                 pass
             process.communicate()
@@ -837,10 +841,26 @@ def handle(request, executor=None):
     params = request.get("params", {})
     if not isinstance(params, dict):
         rpc_error(msg_id, -32602, "params must be an object")
+    elif method == "server/discover":
+        result(msg_id, {
+            "supportedVersions": [
+                "2026-07-28",
+                "2025-11-25",
+                "2025-06-18",
+                "2025-03-26",
+                "2024-11-05",
+            ],
+            "capabilities": {"tools": {}},
+            "instructions": "Для каждого чата создай один session_id и повторяй его во всех вызовах delegate_agent и consult_agents. Лимит действует на чат: не более четырёх запусков агентов и трёх разных помощников. Обычно достаточно одного исполнителя; ведущий сам проверяет diff и проверки. Подключай других только при конкретном риске или нерешённом вопросе. task_id отдельно группирует вызовы по задаче.",
+        })
     elif method == "initialize":
-        result(msg_id, {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "agent-orchestrator", "version": "0.4.3"},
-                        "instructions": "Для каждого чата создай один session_id и повторяй его во всех вызовах delegate_agent и consult_agents. Лимит действует на чат: не более четырёх запусков агентов и трёх разных помощников. Обычно достаточно одного исполнителя; ведущий сам проверяет diff и проверки. Подключай других только при конкретном риске или нерешённом вопросе. task_id отдельно группирует вызовы по задаче."})
+        client_version = params.get("protocolVersion") or "2025-03-26"
+        result(msg_id, {
+            "protocolVersion": client_version,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "agent-orchestrator", "version": "0.4.3"},
+            "instructions": "Для каждого чата создай один session_id и повторяй его во всех вызовах delegate_agent и consult_agents. Лимит действует на чат: не более четырёх запусков агентов и трёх разных помощников. Обычно достаточно одного исполнителя; ведущий сам проверяет diff и проверки. Подключай других только при конкретном риске или нерешённом вопросе. task_id отдельно группирует вызовы по задаче.",
+        })
     elif method == "ping":
         result(msg_id, {})
     elif method == "tools/list":
@@ -867,6 +887,10 @@ def handle(request, executor=None):
         rpc_error(msg_id, -32601, "Method not found")
 
 def main():
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     def stop_children(signum, frame):
         with MCP_STATE_LOCK:
             pids = list(ACTIVE_CHILD_GROUPS)
