@@ -330,8 +330,17 @@ def validate_args(args, task_required=True):
     if not isinstance(raw_path, str) or not raw_path.strip():
         raise ValueError("cwd must be a non-empty path")
     path = os.path.realpath(os.path.expanduser(raw_path))
-    if path != HOME and not path.startswith(HOME + os.sep):
-        raise ValueError("cwd must be inside the home folder")
+    allowed_roots = [HOME]
+    extra_roots = os.environ.get("AGENT_ORCHESTRATOR_ALLOWED_ROOTS")
+    if extra_roots:
+        for r in extra_roots.split(os.pathsep):
+            if r.strip():
+                allowed_roots.append(os.path.realpath(os.path.expanduser(r.strip())))
+    elif os.name == "nt":
+        allowed_roots.append(os.path.realpath(r"D:\Workspace"))
+
+    if not any(path == root or path.startswith(root + os.sep) for root in allowed_roots):
+        raise ValueError("cwd must be inside the home folder or AGENT_ORCHESTRATOR_ALLOWED_ROOTS")
     if not os.path.isdir(path):
         raise ValueError("cwd must be an existing folder")
     return task, path
